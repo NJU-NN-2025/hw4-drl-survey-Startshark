@@ -1,0 +1,486 @@
+\documentclass[a4paper,12pt]{article}
+
+% --- 宏包引入 ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[UTF8, scheme=plain]{ctex} % 中文支持
+\usepackage{amsmath, amssymb, amsfonts} % 数学公式
+\usepackage{graphicx}       % 图片
+\usepackage{geometry}       % 页面设置
+\usepackage{hyperref}       % 超链接
+\usepackage{cite}           % 引用
+\usepackage{booktabs}       % 表格美化
+\usepackage{float}          % 图片位置控制
+\usepackage{setspace}       % 行距设置
+\usepackage{xcolor}         % 颜色支持
+\usepackage{algorithm}      % 算法伪代码
+\usepackage{algorithmic}
+\usepackage[most]{tcolorbox}
+
+\definecolor{KTTitle}{RGB}{11,58,110}   % 深蓝标题条
+\definecolor{KTBack}{RGB}{245,247,250}  % 浅灰底
+\definecolor{KTFrame}{RGB}{180,190,205} % 灰蓝边框
+
+% 环境：keytakeaways
+\newtcolorbox{keytakeaways}[1][]{
+  enhanced,
+  colback=KTBack,
+  colframe=KTFrame,
+  boxrule=0.6pt,
+  arc=2.2mm,
+  left=1.2mm,
+  right=1.2mm,
+  top=1.0mm,
+  bottom=1.0mm,
+  fonttitle=\bfseries,
+  coltitle=white,
+  title=Key Takeaways,
+  attach boxed title to top left={xshift=1.5mm,yshift=-1.5mm},
+  boxed title style={
+    colback=KTTitle,
+    colframe=KTTitle,
+    boxrule=0pt,
+    arc=2.2mm,
+    left=1.8mm,
+    right=1.8mm,
+    top=0.8mm,
+    bottom=0.8mm
+  },
+  before skip=8pt,
+  after skip=10pt,
+  % 可选：加一个轻微阴影，让它更“PPT卡片”
+  drop shadow={black!15!white},
+  #1
+}
+
+
+% --- 页面设置 ---
+\geometry{left=2.54cm, right=2.54cm, top=2.54cm, bottom=2.54cm}
+\onehalfspacing % 1.5倍行距
+
+% --- 常用数学符号 ---
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Var}{\mathrm{Var}}
+\newcommand{\KL}{\mathrm{KL}}
+\newcommand{\TV}{\mathrm{TV}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\argmax}{\mathop{\mathrm{argmax}}}
+\newcommand{\argmin}{\mathop{\mathrm{argmin}}}
+
+% --- 标题信息 ---
+\title{\textbf{\Large 深度强化学习 Sim-to-Real 技术演进综述}}
+\author{
+    \textbf{231880394} \quad \textbf{翟笑晨} \\
+    \textit{南京大学/匡亚明学院}
+}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\vspace{3.5cm}
+
+% --- 摘要 ---
+\begin{abstract}
+
+\vspace{0.25em}
+
+\noindent
+深度强化学习（DRL）在模拟环境中展现了惊人的决策能力，但将其迁移至真实物理世界（Sim-to-Real）时，往往因动力学参数偏差与感知噪声而面临巨大的“现实鸿沟（Reality Gap）”。本文旨在系统梳理 Sim-to-Real 技术的发展脉络，构建了从早期的均匀域随机化（Uniform DR）到数据驱动的自动域随机化（ADR/BayRn），再到基于隐式适应（RMA）与生成式 AI（GenAI）辅助的技术演进图谱。文章深入剖析了现有方法在“参数搜索效率”与“物理语义缺失”方面的局限性，并重点探讨了 DrEureka、GenSim 等最新范式如何利用大语言模型（LLM）的物理常识与代码生成能力，实现了从“数值参数优化”到“语义环境生成”的范式转移。通过综合分析核心文献，本文揭示了 Sim-to-Real 技术正向着零样本（Zero-shot）、多模态（Multimodal）和全自动化（Fully Automated）方向演进的趋势 \cite{Da2025,Zhao2020}。
+
+\vspace{1cm}
+\noindent \textbf{关键词：} 深度强化学习；Sim-to-Real；域随机化；元学习；大语言模型；具身智能
+\end{abstract}
+
+\newpage
+
+\tableofcontents
+
+\newpage
+
+% --- 正文 ---
+
+\section{引言 (Introduction)}
+
+随着深度强化学习的发展，机器人在仿真环境中掌握复杂技能已成为常态。然而，直接将仿真训练的策略部署到真实机器人上通常会失败，这种现象被称为“现实鸿沟（Reality Gap）”。从实践演化看，早期成功案例既包括基于视觉随机化的端到端飞行控制（CAD2RL）\cite{Sadeghi2017}，也包括面向动力学鲁棒控制的随机化训练 \cite{Tobin2017,Peng2018,Tan2018}，以及后续在灵巧手与抓取等任务上的规模化验证 \cite{OpenAI2019,Handa2023,James2019}。
+
+\subsection{基本定义}
+强化学习通常被建模为马尔可夫决策过程（MDP）：
+\begin{equation}
+\mathcal{M} = (S, A, T, R, \gamma),
+\end{equation}
+其中状态 $s \in S$，动作 $a \in A$，转移概率 $T(s'|s,a)$，奖励 $R(s,a)$，折扣因子 $\gamma\in(0,1)$。策略 $\pi(a|s)$ 的期望折扣回报为
+\begin{equation}
+J(\pi; \mathcal{M}) = \E_{\tau \sim p(\tau|\pi,\mathcal{M})}\Big[\sum_{t=0}^{\infty}\gamma^t r_t\Big].
+\label{eq:return}
+\end{equation}
+
+Sim-to-Real 的核心挑战在于：仿真域与真实域存在分布偏移（Distribution Shift），尤其体现在转移函数不一致：
+\begin{equation}
+T_{sim}(s'|s,a;\xi) \neq T_{real}(s'|s,a),
+\end{equation}
+其中 $\xi \in \Xi \subset \R^d$ 表示仿真器动力学参数（摩擦、质量、阻尼、关节延迟、传感器噪声等）。
+
+\subsection{为什么“轻微动力学误差”会造成大性能坍塌}
+若每一步转移的差异（例如用总变差距离度量）上界为
+\begin{equation}
+\epsilon_T \;\triangleq\; \sup_{s,a} \TV\!\big(T_{real}(\cdot|s,a),\, T_{sim}(\cdot|s,a)\big),
+\end{equation}
+且单步奖励有界 $|r_t|\le R_{\max}$，则同一策略在真实/仿真回报差异会随时域增长而放大：
+\begin{equation}
+\big|J_{real}(\pi)-J_{sim}(\pi)\big|
+\;\lesssim\; \frac{2\gamma R_{\max}}{(1-\gamma)^2}\,\epsilon_T.
+\label{eq:simlemma}
+\end{equation}
+这解释了为何长时序控制中“看似很小的动力学偏差”会滚动累积并导致策略失效。
+
+为了解决这一问题，Sim-to-Real 技术经历了三个阶段的演进：
+\begin{enumerate}
+    \item \textbf{随机化阶段}：通过覆盖大量参数 $\xi$ 来“包围”真实世界（Domain Randomization, DR）\cite{Tobin2017,Peng2018}；
+    \item \textbf{适应阶段}：通过系统辨识、在线辨识或元学习，让策略在线适应真实参数（Adaptation/Meta-RL）\cite{Yu2017,Kumar2021,Nagabandi2019}；
+    \item \textbf{生成阶段}：利用大语言模型（LLM）的通识能力，自动生成合理参数分布甚至仿真任务与环境（Generative Sim-to-Real）\cite{Ma2023Eureka,DrEureka2024,Wang2024GenSim,Wang2024RoboGen}。
+\end{enumerate}
+
+本文将围绕这三条主线，综述近年的关键技术进展，特别是分析 Generative AI 如何解决传统方法中“参数搜索盲目”和“奖励设计困难”的痛点 \cite{Da2025}。
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{纲要.png}
+    \caption{本文结构纲要：展示了从均匀域随机化，到自动化与数据驱动，再到隐式适应与生成式 AI 辅助的 Sim-to-Real 技术演进路径(AI生成，存在部分文字错误)}
+    \label{fig:outline}
+\end{figure}
+
+\newpage
+
+\section{核心技术演进 (Core Technology Evolution)}
+
+为了清晰展示 Sim-to-Real 技术的迭代逻辑，本文构建了技术演进逻辑图（如图 \ref{fig:evolution} 所示）并将围绕其展开论述。
+
+% --- 逻辑图占位符 ---
+\begin{figure}[H]
+    \centering
+    % \fbox{
+    %     \begin{minipage}{0.9\textwidth}
+    %         \centering
+    %         \vspace{1cm}
+    %         \textbf{Sim-to-Real 技术演进脉络}
+    %         \vspace{0.5cm}
+
+    %         \textbf{Phase 1: 鲁棒性探索 (2017-2018)} \\
+    %         $\downarrow$ \\
+    %         \textit{Uniform DR [Tobin 2017]}: 暴力随机化，依赖专家经验设定范围 \\
+
+    %         \vspace{0.5cm}
+    %         $\downarrow$ \textit{缺陷：范围难以确定，采样效率低} \\
+    %         \vspace{0.5cm}
+
+    %         \textbf{Phase 2: 自动化与数据驱动 (2019-2021)} \\
+    %         $\swarrow$ \hspace{4cm} $\searrow$ \\
+    %         \textbf{自动优化路线 (Auto-DR)} \hspace{2cm} \textbf{在线适应路线 (Adaptation)} \\
+    %         \textit{ADR [OpenAI 2019]}: 课程学习扩大范围 \hspace{1cm} \textit{RMA [Kumar 2021]}: 隐式系统辨识 \\
+    %         \textit{BayRn [Muratore 2021]}: 贝叶斯优化 \hspace{1.5cm} \textit{AdaptSim [Ren 2023]}: 任务驱动适应 \\
+
+    %         \vspace{0.5cm}
+    %         $\searrow$ \hspace{4cm} $\swarrow$ \\
+    %         \textit{缺陷：黑盒优化无物理语义，Reward 仍需手工设计} \\
+    %         \vspace{0.5cm}
+
+    %         \textbf{Phase 3: 语义生成与大模型驱动 (2023-Present)} \\
+    %         $\downarrow$ \\
+    %         \textbf{LLM-Guided Sim-to-Real} \\
+    %         \textit{Eureka [Ma 2023]}: 自动生成 Reward \\
+    %         \textit{DrEureka [Ma 2024]}: 语义物理先验 + 零样本迁移 \\
+    %         \textit{GenSim/RoboGen [Wang 2024]}: 自动生成任务与环境 \\
+    %         \vspace{1cm}
+    %     \end{minipage}
+    % }
+    \includegraphics[width=\textwidth]{技术演进逻辑图.png}
+    \caption{Sim-to-Real 技术演进逻辑图。展示了从基于规则的随机化，到基于数据的自动化优化，最终汇聚于基于语义的生成式方法的演进过程。}
+    \label{fig:evolution}
+\end{figure}
+
+\section{均匀域随机化 (Uniform Domain Randomization)}
+Tobin 等人 \cite{Tobin2017} 提出的域随机化（DR）通过最大化在参数分布 $P(\xi)$ 下的期望回报来训练策略。该思想不仅用于视觉域（通过渲染与纹理随机化提升感知鲁棒性），也可直接用于控制域中的动力学随机化 \cite{Peng2018,Tan2018}，并在灵巧操作与抓取任务中得到规模化验证 \cite{OpenAI2019,Handa2023,James2019}。
+
+\paragraph{期望鲁棒优化}
+\begin{equation}
+\pi^\star
+= \argmax_{\pi}\;
+\E_{\xi \sim P(\xi)}\big[J(\pi; \mathcal{M}(\xi))\big],
+\label{eq:dr_obj}
+\end{equation}
+其中 $\mathcal{M}(\xi)$ 表示由参数 $\xi$ 决定的仿真 MDP。动力学随机化常令
+\begin{equation}
+\xi = \big[m,\; \mu,\; b,\; k,\; \Delta t,\; \sigma_{sensor},\ldots\big].
+\end{equation}
+
+\paragraph{保守性来源}
+更保守的形式是最坏情形鲁棒：
+\begin{equation}
+\pi^\star = \argmax_{\pi}\; \min_{\xi \in \Xi}\; J(\pi;\mathcal{M}(\xi)).
+\label{eq:minmax}
+\end{equation}
+实践中用“更宽的随机化范围”近似 \eqref{eq:minmax}，但会导致过度保守与样本效率低的问题 \cite{Zhao2020,Da2025}。
+
+\section{自动域随机化与数据驱动 (Automatic \& Active DR)}
+
+\subsection{ADR：课程学习式的“边界推进”}
+OpenAI 在 Rubik's Cube 机器人手任务中展示了通过逐步扩张随机化边界提升真实迁移的路线 \cite{OpenAI2019}。可将其抽象为参数分布族 $P_\phi(\xi)$：
+\begin{equation}
+\pi^\star(\phi)=\argmax_{\pi}\;\E_{\xi\sim P_\phi(\xi)}\big[J(\pi;\mathcal{M}(\xi))\big].
+\end{equation}
+并依据边界成功率更新分布参数（课程学习/自适应扩张）：
+\begin{equation}
+\phi \leftarrow \phi + \eta \cdot \nabla_\phi \; \E_{\xi \sim P_\phi}\big[\mathbb{I}(\text{success}(\pi,\xi))\big].
+\label{eq:adr_abs}
+\end{equation}
+
+\subsection{Active DR：用“最有信息的参数”主动提问}
+Mehta 等提出 Active Domain Randomization \cite{Mehta2020} 强调：与其无差别采样，不如选择能最大化学习信号/暴露失败模式的参数区域。直观上，它可被理解为在 $\xi$ 空间中进行一种“主动实验设计”，提升随机化的样本效率（与 BayRn 的“用真实数据做反向拟合”互补）。
+
+\subsection{BayRn：利用少量真实数据反向拟合仿真分布}
+Muratore 等 \cite{Muratore2021} 的 BayRn 可抽象为：用少量真实轨迹 $\tau^{real}$ 反向优化分布参数 $\phi$，使仿真轨迹统计更一致：
+\begin{equation}
+f(\phi)=D\!\big(\tau^{real},\, \tau^{sim}(\phi)\big),
+\qquad
+\phi^\star = \argmin_{\phi}\; f(\phi).
+\label{eq:bayrn_obj}
+\end{equation}
+其关键在于 $f(\phi)$ 常不可导且真实采样昂贵，因此采用高斯过程代理模型：
+\begin{equation}
+f(\phi)\sim \mathcal{GP}(m(\phi),k(\phi,\phi')),
+\label{eq:gp}
+\end{equation}
+并通过 acquisition function 选取下一个评估点：
+\begin{equation}
+\phi_{t+1}=\argmax_{\phi}\;\alpha(\phi;\mathcal{D}_t).
+\end{equation}
+
+\subsection{DORAEMON：熵最大化的“找麻烦”随机化}
+Tiboni 等 \cite{Tiboni2024} 的核心思想是：不依赖真实数据，直接寻找“挑战性最大且多样”的参数分布。典型形式为最大化分布熵并保持任务可学：
+\begin{equation}
+\max_{P(\xi)}\; H(P)
+\quad \text{s.t.}\quad
+\E_{\xi\sim P}[J(\pi;\mathcal{M}(\xi))]\ge \beta,
+\label{eq:entropy_constraint}
+\end{equation}
+或拉格朗日松弛：
+\begin{equation}
+\max_{P(\xi)}\; H(P) + \lambda \cdot \E_{\xi\sim P}[J(\pi;\mathcal{M}(\xi))].
+\label{eq:entropy_lagrange}
+\end{equation}
+
+
+尽管 BayRn、Active DR 与熵最大化提高了搜索效率 \cite{Mehta2020,Muratore2021,Tiboni2024}，但它们本质上仍偏“数值层面的黑盒优化”：优化器缺乏物理语义约束，可能探索到不合理参数组合；同时 BayRn 仍需真实采样成本。
+
+\section{隐式适应 (Implicit Adaptation)}
+
+\subsection{把动力学视作隐藏变量：POMDP 视角}
+若把动力学参数 $\xi$ 视为 episode 级别固定但未知的隐藏状态，则策略应基于历史形成对 $\xi$ 的信念：
+\begin{equation}
+b_t(\xi)=p(\xi \mid o_{0:t}, a_{0:t-1}).
+\end{equation}
+这一视角与“在线系统辨识 + 通用策略”的经典思路一致：Yu 等 \cite{Yu2017} 提出通过在线系统辨识模块估计隐藏动力学，并驱动通用策略在未知环境中快速适应。
+
+\subsection{RMA：隐变量编码 + Teacher-Student 蒸馏}
+Kumar 等 \cite{Kumar2021} 的 RMA 采用 teacher-student：教师可访问特权信息（如 $\xi$ 或更完整状态），学生仅基于本体感觉历史推断隐变量并控制。可写为
+\begin{align}
+z_t &= f_\theta(h_t), \qquad h_t = (o_{t-k:t}, a_{t-k:t-1}), \label{eq:rma_latent}\\
+a_t^{stu} &\sim \pi_\psi(\cdot \mid s_t, z_t),\\
+a_t^{tea} &\sim \pi_{\text{priv}}(\cdot \mid s_t, \xi), \label{eq:rma_teacher}
+\end{align}
+学生通过蒸馏损失拟合教师动作/分布：
+\begin{equation}
+\mathcal{L}_{distill}
+= \E\big[\|a_t^{stu}-a_t^{tea}\|^2\big]
+\quad \text{或}\quad
+\E\big[\KL(\pi_{\text{priv}}(\cdot|s_t,\xi)\;\|\;\pi_\psi(\cdot|s_t,z_t))\big].
+\label{eq:rma_distill}
+\end{equation}
+
+\subsection{Meta-RL：把“适应过程”本身学出来}
+Nagabandi 等 \cite{Nagabandi2019} 代表了另一条适应思路：用元强化学习在训练阶段经历多环境变化，让策略在真实动态环境中快速更新/内化适应机制（可理解为学习一个“能快速变化的控制器”）。这与 RMA/UPOSI 同样有“宁可学适应，也不求精确辨识”的特性。
+
+\subsection{任务驱动适应与多行为泛化}
+Ren 等 \cite{Ren2023} 的 AdaptSim 强调任务驱动的仿真适配：以任务性能为反馈，自动调整仿真以更好支持迁移。另一方面，Margolis \& Agrawal \cite{Margolis2023} 强调通过“行为多样性（multiplicity of behavior）”提升泛化鲁棒性，可视为在策略空间层面做覆盖而非仅在参数空间覆盖。
+
+\section{语义生成与全流程自动化 (Generative Sim-to-Real)}
+
+\subsection{Eureka：把 Reward Design 形式化为“程序搜索”}
+Eureka \cite{Ma2023Eureka} 把奖励函数视为可搜索的程序 $r_\omega(\cdot)$（由 LLM 生成代码候选），形成双层优化：
+\begin{align}
+\omega^\star &= \argmax_{\omega}\; \mathcal{S}\big(\pi^\star(\omega)\big), \label{eq:eureka_outer}\\
+\pi^\star(\omega) &= \argmax_{\pi}\; \E\Big[\sum_{t\ge 0}\gamma^t r_\omega(s_t,a_t)\Big]. \label{eq:eureka_inner}
+\end{align}
+同类“语言到奖励”的研究也表明：自然语言约束可被编译为 reward/成本项，从而降低手工 shaping 的负担 \cite{Yu2023Lang2Reward}。
+
+\subsection{DrEureka：物理先验引导的参数生成}
+DrEureka \cite{DrEureka2024} 强调让 LLM 输出具有物理意义的随机化先验（语义条件分布）：
+\begin{equation}
+\xi \sim P_{LLM}(\xi \mid c),
+\label{eq:llm_prior}
+\end{equation}
+其中 $c$ 是场景/任务描述（草地/冰面/沙地等），先验相当于用语言常识剪枝参数空间；同时继承 Eureka 式 reward 自动化，可把安全/平滑写成 reward shaping：
+\begin{equation}
+r(s,a) = r_{\text{task}}(s,a)
+- \lambda_1 \|a_t-a_{t-1}\|^2
+- \lambda_2 \|\tau_t\|^2
+- \lambda_3 \cdot \mathbb{I}(\text{fall}).
+\label{eq:safety_reward}
+\end{equation}
+
+\subsection{GenSim \& RoboGen：从参数生成到环境/任务生成}
+GenSim \cite{Wang2024GenSim} / RoboGen \cite{Wang2024RoboGen} 进一步将生成对象从参数 $\xi$ 扩展到环境/任务代码 $e$（地形、物体、URDF、布局、事件等）：
+\begin{equation}
+e \sim p_\theta(e\mid \text{prompt}), \qquad
+\pi^\star = \argmax_{\pi}\; \E_{e\sim p_\theta}\big[J(\pi; \mathcal{M}_e)\big].
+\label{eq:gensim_obj}
+\end{equation}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.7\textwidth]{演进.png}
+    \caption{Sim-to-Real 技术的三阶段演进示意图。展示了从均匀域随机化，到自动化与数据驱动，再到语义生成与全流程自动化的技术路线(AI生成，存在部分文字错误)}
+    \label{fig:evolution_summary}
+\end{figure}
+
+\newpage
+
+\section{思考与展望 (Discussion \& Outlook)} 
+
+\subsection{从数值优化到语义推理 (From Numerical to Semantic)} 
+早期的数据驱动路线（以 BayRn 为代表）本质上把 Sim-to-Real 视为“在真实样本预算有限的条件下，反向校准仿真分布参数”的问题，其优化形式可由前文 BayRn 的目标式 \eqref{eq:bayrn_obj} 概括：通过少量真实轨迹统计去约束仿真轨迹统计，使仿真分布逐步靠近真实分布 \cite{Muratore2021}。更一般地，从“轨迹分布/占用测度匹配”的视角，可以将这一类方法抽象为：在固定策略 $\pi$ 或迭代策略更新的过程中，匹配真实与仿真的轨迹分布或状态-动作占用测度（occupancy measure）：
+\begin{equation} 
+\min_{\xi}\; \KL\!\big(p_{real}(\tau)\,\|\,p_{sim}(\tau;\xi)\big) 
+\quad \text{或} \quad 
+\min_{\xi}\; \mathcal{D}\big(d^{\pi}_{real}(s,a),\, d^{\pi}_{sim}(s,a;\xi)\big), 
+\label{eq:traj_match} 
+\end{equation} 
+其中 $p(\tau)$ 为轨迹分布，$d^{\pi}(s,a)$ 为策略诱导的占用测度。该抽象强调了两点关键难题：(\emph{i}) 只有在策略访问到的子空间内，匹配才“可见”（不可观测区域无法被数据约束）；(\emph{ii}) 匹配目标往往非凸、不可导且带噪，导致优化高度依赖启发式与采样预算。 
+
+Active DR 与熵最大化路线提升了搜索效率，但更偏向“怎样更快地找到困难参数/困难区域”，并没有从根本上解决“搜索空间物理可行性与语义合理性”问题 \cite{Mehta2020,Tiboni2024}。相比之下，Phase 3 的 DrEureka/GenSim 通过语义先验（前文式 \eqref{eq:llm_prior}）与环境生成（前文式 \eqref{eq:gensim_obj}）将物理常识显式注入搜索过程：把大量“物理上不合理”的区域在生成阶段就剪枝。用 Bayesian 视角可写成：
+\begin{equation} 
+p(\xi \mid \mathcal{D}_{real}) 
+\propto p(\mathcal{D}_{real} \mid \xi)\, p_{LLM}(\xi \mid c), 
+\label{eq:semantic_bayes} 
+\end{equation} 
+其中 $p_{LLM}(\xi|c)$ 把语言知识转化为结构化先验，使后续的数值优化更集中在“物理可行子空间”内，从而体现出从数值拟合到语义推理的演进趋势 \cite{Da2025}。 
+
+\begin{keytakeaways} 
+\begin{itemize} 
+    \item \textbf{数值拟合视角（Phase 2 / Auto-DR）}：BayRn 可由 \eqref{eq:bayrn_obj} 概括为“用少量真实轨迹统计反向校准仿真分布”，其有效性受限于采样预算与可观测子空间 \cite{Muratore2021}。 
+    \item \textbf{效率改进但仍黑盒（Phase 2 / Active \& Entropy）}：Active DR 与熵最大化解决“搜得更快”，但难以保证“搜得更合理”，物理语义仍缺位 \cite{Mehta2020,Tiboni2024}。 
+    \item \textbf{语义剪枝的范式转移（Phase 3 / GenAI）}：DrEureka/GenSim 用语义先验（\eqref{eq:llm_prior}、\eqref{eq:semantic_bayes}）与环境生成（\eqref{eq:gensim_obj}）把“盲搜”转为“先语义定位、再数值微调” \cite{Da2025}。 
+    \item \textbf{趋势}：更可能是“语义先验 + 数值优化”的混合系统：Phase 3 提供结构化先验/约束，Phase 2 负责局部精调与验证。 
+\end{itemize} 
+\end{keytakeaways} 
+
+
+
+\subsection{从被动鲁棒到主动生成 (From Passive to Generative)} 
+UDR/ADR 更偏被动鲁棒：其目标是扩大训练扰动覆盖，使策略在未知变化下尽量保持性能。它们在形式上分别对应前文的“期望鲁棒目标”\eqref{eq:dr_obj} 与“近似最坏情形鲁棒”\eqref{eq:minmax}，优势是通用、实现直接，但代价往往是训练成本高、策略趋于保守，且对扰动集合设计仍有较强工程依赖 \cite{Tobin2017,OpenAI2019}。 
+
+RoboGen/GenSim 则体现了主动生成范式：不只训练策略，还把“训练环境/任务的分布”本身当作可优化对象 \cite{Wang2024RoboGen,Wang2024GenSim}。其核心可以用双层视角表达为（该式在前文未出现，作为新的抽象保留）：
+\begin{align} 
+\max_{p(e)} \quad & \mathcal{G}\big(\pi^\star(p(e))\big) \\ 
+\text{s.t.}\quad & \pi^\star(p(e))=\argmax_{\pi}\; \E_{e\sim p(e)}\big[J(\pi;\mathcal{M}_e)\big], 
+\label{eq:env_curriculum} 
+\end{align} 
+其中 $\mathcal{G}$ 衡量泛化或部署表现。AdaptSim 可视为 Phase 2 向 Phase 3 过渡的重要桥梁：它用任务反馈塑形仿真，使“仿真适配”成为学习过程的一部分 \cite{Ren2023}；而行为多样性路线强调在策略空间构造覆盖，从另一维度提升泛化，与“生成更多样环境”的思路互补 \cite{Margolis2023}。 
+
+\begin{keytakeaways} 
+\begin{itemize} 
+    \item \textbf{被动鲁棒（Phase 1/2）}：UDR/ADR 在形式上对应 \eqref{eq:dr_obj} 与 \eqref{eq:minmax}，通过扩大扰动集合来“硬抗变化” \cite{Tobin2017,OpenAI2019}。 
+    \item \textbf{主动生成（Phase 3）}：GenSim/RoboGen 把重点从“调参训练策略”扩展为“设计训练分布/生成环境”（式 \eqref{eq:env_curriculum}），实现从“包围真实”到“生成训练价值”的升级 \cite{Wang2024GenSim,Wang2024RoboGen}。 
+    \item \textbf{过渡形态（Phase 2$\rightarrow$3）}：AdaptSim 用任务反馈驱动仿真适配，连接了 Phase 2 的自动化与 Phase 3 的生成式范式 \cite{Ren2023}。 
+    \item \textbf{互补维度（Phase 2B）}：行为多样性扩策略空间，环境生成扩环境空间；两者可叠加增强鲁棒泛化 \cite{Margolis2023}。 
+\end{itemize} 
+\end{keytakeaways} 
+
+\newpage
+
+\subsection{零样本迁移的边界 (The Limits of Zero-Shot)} 
+DrEureka 展示了“在缺少真实数据时，依赖语义先验与自动化 reward 仍可能获得可部署策略”的潜力：其核心机制分别对应前文的语义先验（\eqref{eq:llm_prior}）与 Eureka 的程序化奖励搜索（\eqref{eq:eureka_outer}--\eqref{eq:eureka_inner}）\cite{DrEureka2024}。然而，零样本迁移的根本风险是“先验失配”：当真实世界的动力学/视觉因素落在 LLM 经验分布之外时，生成的随机化范围与奖励偏好可能系统性偏离，从而导致训练分布与部署分布不一致。一个直接刻画这种失配的方式是用先验分布与真实分布之间的散度：
+\begin{equation}
+\Delta_{\text{prior}}
+\;\triangleq\;
+\KL\!\big(p_{real}(\xi)\,\|\,p_{LLM}(\xi\mid c)\big),
+\label{eq:prior_mismatch}
+\end{equation}
+当 $\Delta_{\text{prior}}$ 较大时，即便策略在训练分布上表现良好，部署性能也可能显著下降（尤其在长时序控制任务中，这类误差会被滚动放大）。 
+
+与此同时，Phase 2B 的隐式辨识与在线适应路线提供了对抗失配的“兜底机制”：通过历史推断隐变量并条件化控制，使策略在部署时能够吸收未建模误差，其结构在前文已由 RMA 的隐变量编码形式 \eqref{eq:rma_latent} 体现 \cite{Yu2017,Kumar2021,Nagabandi2019}。因此，更现实的终局往往不是“纯 Zero-shot”，而是“语义生成（给出良好初始化） + 在线适应（吸收剩余误差）”的闭环系统：语义模块减少搜索盲目性，适应模块处理长尾与不可预见因素 \cite{Da2025,DrEureka2024}。 
+
+\begin{keytakeaways} 
+\begin{itemize} 
+    \item \textbf{零样本优势（Phase 3）}：DrEureka 依赖语义先验 \eqref{eq:llm_prior} 与自动化 reward（\eqref{eq:eureka_outer}--\eqref{eq:eureka_inner}）提升无真实数据部署可能性 \cite{DrEureka2024}。 
+    \item \textbf{边界刻画（新增不重复公式）}：零样本的核心风险是先验失配，可用 $\Delta_{\text{prior}}$（式 \eqref{eq:prior_mismatch}）刻画训练分布与真实分布偏离程度。 
+    \item \textbf{在线适应兜底（Phase 2B）}：UPOSI/RMA/Meta-RL 通过历史推断（结构见 \eqref{eq:rma_latent}）弥补长尾动力学误差 \cite{Yu2017,Kumar2021,Nagabandi2019}。 
+    \item \textbf{终局形态}：Phase 3（语义生成）与 Phase 2B（在线适应）更可能组合成闭环系统，而非相互取代 \cite{Da2025}。 
+\end{itemize} 
+\end{keytakeaways} 
+
+\newpage
+
+\subsection{多模态鸿沟 (The Multimodal Gap)} 
+视觉上的 Sim-to-Real 仍然困难：即便动力学被充分随机化，真实世界的光照、材质、透明/反光与传感器成像链路也会带来显著偏移。CAD2RL 强调仅用仿真图像通过视觉随机化实现真实飞行 \cite{Sadeghi2017}，其可抽象为对外观参数 $\phi$ 的期望风险最小化（该式为该小节的关键支撑，且不与前文动力学公式重复）：
+\begin{equation} 
+\min_{\theta}\; \E_{\phi \sim P(\phi)}\Big[ \mathcal{L}\big(f_\theta(I(\phi)), y\big) \Big], 
+\label{eq:vis_dr} 
+\end{equation} 
+其中 $I(\phi)$ 为渲染器生成图像，$f_\theta$ 为感知网络/策略网络。Sim-to-Sim 则展示了用“从一个仿真到另一个更贴近真实的仿真”来降低真实数据需求 \cite{James2019}，其直觉可由“差异可分解”表达为：
+\begin{equation} 
+\mathcal{D}(p_{sim}, p_{real}) \;\le\; \mathcal{D}(p_{sim}, p_{mid}) + \mathcal{D}(p_{mid}, p_{real}), 
+\label{eq:bridge} 
+\end{equation} 
+其中 $p_{mid}$ 是更贴近真实统计的中间仿真域。Dextreme 表明在操作任务中，大规模随机化仍能支持从仿真到真实的灵巧操作迁移 \cite{Handa2023}，但训练成本与可控性仍是挑战。未来，多模态 Sim-to-Real 很可能依赖“生成式场景 + 物理一致性约束”的 world simulator：在更真实的视觉-物理耦合模拟中，以更少的人为建模假设覆盖更广的真实分布，从而进一步缩小多模态现实鸿沟 \cite{Da2025,Zhao2020}。 
+
+\begin{keytakeaways} 
+\begin{itemize} 
+    \item \textbf{视觉随机化（Parallel branch，与 Phase 1 同源）}：CAD2RL 用外观随机化实现无需真实图像迁移（式 \eqref{eq:vis_dr}），与 Phase 1 的“随机化包围真实”在结构上对偶 \cite{Sadeghi2017}。 
+    \item \textbf{桥接策略（Parallel branch，连接 Phase 2 的数据效率诉求）}：Sim-to-Sim 通过中间域分解差异（式 \eqref{eq:bridge}），减少真实采样压力 \cite{James2019}。 
+    \item \textbf{规模化证据（Parallel branch 与 Phase 1/2 经验一致）}：Dextreme 表明在高复杂任务中“大规模随机化 + 足够算力”仍有效，但训练成本高 \cite{Handa2023}。 
+    \item \textbf{趋势（与 Phase 3 呼应）}：未来多模态 Sim-to-Real 可能依赖“生成式场景 + 物理一致性约束”的 world simulator，推动从“渲染随机化”走向“语义可控生成” \cite{Da2025,Zhao2020}。 
+\end{itemize} 
+\end{keytakeaways}
+
+
+\newpage
+
+% --- 参考文献 ---
+\begin{thebibliography}{99}
+\addtolength{\itemsep}{-0.5ex}
+
+\bibitem{Da2025} Da, L., et al. (2025). A Survey of Sim-to-Real Methods in RL: Progress, Prospects and Challenges with Foundation Models. \textit{arXiv preprint}.
+\bibitem{Zhao2020} Zhao, W., et al. (2020). Sim-to-Real Transfer in Deep Reinforcement Learning for Robotics: A Survey. \textit{IEEE SSCI}.
+
+\bibitem{Tobin2017} Tobin, J., et al. (2017). Domain randomization for transferring deep neural networks from simulation to the real world. \textit{IROS}.
+\bibitem{Peng2018} Peng, X. B., et al. (2018). Sim-to-real transfer of robotic control with dynamics randomization. \textit{ICRA}.
+\bibitem{Tan2018} Tan, J., et al. (2018). Sim-to-real: Learning agile locomotion for quadruped robots. \textit{RSS}.
+\bibitem{Sadeghi2017} Sadeghi, F., \& Levine, S. (2017). CAD2RL: Real single-image flight without a single real image. \textit{RSS}.
+
+\bibitem{OpenAI2019} OpenAI, et al. (2019). Solving Rubik's Cube with a Robot Hand. \textit{arXiv}.
+\bibitem{Mehta2020} Mehta, B., et al. (2020). Active domain randomization. \textit{CoRL}.
+\bibitem{Muratore2021} Muratore, F., et al. (2021). Data-efficient domain randomization with bayesian optimization. \textit{IEEE RA-L}.
+\bibitem{Tiboni2024} Tiboni, G., et al. (2024). Domain Randomization via Entropy Maximization. \textit{ICLR}.
+
+\bibitem{Kumar2021} Kumar, A., et al. (2021). RMA: Rapid motor adaptation for legged robots. \textit{RSS}.
+\bibitem{Ren2023} Ren, A. Z., et al. (2023). AdaptSim: Task-Driven Simulation Adaptation for Sim-to-Real Transfer. \textit{CoRL}.
+\bibitem{Yu2017} Yu, W., et al. (2017). Preparing for the unknown: Learning a universal policy with online system identification. \textit{RSS}.
+\bibitem{Margolis2023} Margolis, G., \& Agrawal, P. (2023). Walk these ways: Tuning robot control for generalization with multiplicity of behavior. \textit{CoRL}.
+\bibitem{Nagabandi2019} Nagabandi, A., et al. (2019). Learning to adapt in dynamic, real-world environments through meta-reinforcement learning. \textit{ICLR}.
+
+\bibitem{DrEureka2024} Ma, Y. J., et al. (2024). DrEureka: Language Model Guided Sim-To-Real Transfer. \textit{RSS}.
+\bibitem{Ma2023Eureka} Ma, Y. J., et al. (2023). Eureka: Human-level reward design via coding large language models. \textit{ICLR}.
+\bibitem{Wang2024GenSim} Wang, L., et al. (2024). GenSim: Generating Robotic Simulation Tasks via Large Language Models. \textit{ICLR}.
+\bibitem{Wang2024RoboGen} Wang, Y., et al. (2024). RoboGen: Towards Unleashing Infinite Data for Automated Robot Learning. \textit{ICML}.
+\bibitem{Yu2023Lang2Reward} Yu, W., et al. (2023). Language to rewards for robotic skill synthesis. \textit{CoRL}.
+
+\bibitem{Handa2023} Handa, A., et al. (2023). Dextreme: Transfer of agile in-hand manipulation from simulation to reality. \textit{ICRA}.
+\bibitem{James2019} James, S., et al. (2019). Sim-to-Real via Sim-to-Sim: Data-efficient Robotic Grasping. \textit{CVPR}.
+
+\end{thebibliography}
+
+\end{document}
